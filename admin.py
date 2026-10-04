@@ -103,6 +103,10 @@ def update_setting(code, key, val):
         return True
     return False
 
+def delete_bot(code):
+    cursor.execute("DELETE FROM connected_bots WHERE auth_code = ?", (code,))
+    conn.commit()
+
 def build_main_keyboard():
     bots = get_all_bots()
     kb = []
@@ -127,8 +131,16 @@ def build_settings_keyboard(settings):
             row = []
     if row:
         kb.append(row)
+    # ডিলিট বাটন ও ব্যাক বাটন যোগ
+    kb.append([KeyboardButton("🗑 Delete Bot")])
     kb.append([KeyboardButton("🔙 Back to Bots")])
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
+
+def build_delete_confirm_keyboard():
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("⚠️ Confirm Delete")],
+        [KeyboardButton("🔙 Back to Bots")]
+    ], resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -167,7 +179,7 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = update.message.text.strip()
 
-    # Value update handler
+    # ১. ভ্যালু এডিট হ্যান্ডলার
     if user_id in ADMIN_STATE and ADMIN_STATE[user_id].get("action") == "awaiting_value":
         if text in ["🔙 Back to Bots", "/cancel"]:
             ADMIN_STATE.pop(user_id, None)
@@ -190,13 +202,47 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Navigation buttons
+    # ২. ডিলিট কনফার্মেশন এক্সিকিউশন
+    if text == "⚠️ Confirm Delete":
+        if user_id in ADMIN_STATE and ADMIN_STATE[user_id].get("action") == "confirm_delete":
+            code = ADMIN_STATE[user_id]["code"]
+            data = get_bot_by_code(code)
+            bot_name = data[0] if data else "Selected Bot"
+            delete_bot(code)
+            ADMIN_STATE.pop(user_id, None)
+
+            await update.message.reply_text(
+                f"🗑️ **{bot_name} has been permanently deleted!**",
+                reply_markup=build_main_keyboard(),
+                parse_mode="Markdown"
+            )
+            return
+
+    # ৩. নেভিগেশন ও সাধারণ বাটন
     if text == "🔙 Back to Bots" or text == "🔄 Refresh List":
         ADMIN_STATE.pop(user_id, None)
         await update.message.reply_text("📋 Connected Bots:", reply_markup=build_main_keyboard())
         return
 
-    # Bot selection
+    # ৪. ডিলিট বাটনে ক্লিক (কনফার্মেশন চাওয়া)
+    if text == "🗑 Delete Bot":
+        if user_id not in ADMIN_STATE or "code" not in ADMIN_STATE[user_id]:
+            await update.message.reply_text("Please select a bot first.", reply_markup=build_main_keyboard())
+            return
+
+        code = ADMIN_STATE[user_id]["code"]
+        data = get_bot_by_code(code)
+        if data:
+            ADMIN_STATE[user_id] = {"action": "confirm_delete", "code": code}
+            await update.message.reply_text(
+                f"⚠️ **Are you sure you want to delete '{data[0]}'?**\n\n"
+                f"Once deleted, it will be removed from your panel and database.",
+                reply_markup=build_delete_confirm_keyboard(),
+                parse_mode="Markdown"
+            )
+        return
+
+    # ৫. বটের বাটন ট্যাপ করলে
     if text.startswith("🤖 "):
         name = text.replace("🤖 ", "").strip()
         data = get_bot_by_name(name)
@@ -207,11 +253,11 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             summary = f"⚙️ **{name}** (@{username})\n\nCurrent Configuration:\n"
             for k, v in settings.items():
                 summary += f"• **{k.replace('_', ' ').title()}:** `{v}`\n"
-            summary += "\nTap any setting below to update its value:"
+            summary += "\nTap any setting to edit, or use Delete Bot:"
             await update.message.reply_text(summary, reply_markup=build_settings_keyboard(settings), parse_mode="Markdown")
         return
 
-    # Setting selection
+    # ৬. নির্দিষ্ট কোনো সেটিংসে ক্লিক করলে
     if text.startswith("⚙️ "):
         if user_id not in ADMIN_STATE or "code" not in ADMIN_STATE[user_id]:
             await update.message.reply_text("Please select a bot first.", reply_markup=build_main_keyboard())
@@ -226,7 +272,7 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ADMIN_STATE[user_id] = {"action": "awaiting_value", "code": code, "key": target_key}
             cancel_kb = ReplyKeyboardMarkup([[KeyboardButton("🔙 Back to Bots")]], resize_keyboard=True)
             await update.message.reply_text(
-                f"✏️️ **{raw_key}**\n\nCurrent value: `{settings[target_key]}`\n"
+                f"✏️ **{raw_key}**\n\nCurrent value: `{settings[target_key]}`\n"
                 f"Type and send the new value below:",
                 reply_markup=cancel_kb,
                 parse_mode="Markdown"
